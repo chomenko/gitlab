@@ -1,0 +1,4 @@
+tls:
+  certificates:
+    - certFile: /certs/$GITLAB_DOMAIN.crt
+      keyFile: /certs/$GITLAB_DOMAIN.key

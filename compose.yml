@@ -1,0 +1,88 @@
+version: '3.3'
+
+services:
+  reverse-proxy:
+    image: 'traefik'
+    restart: always
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=${ACM_TLSCHALLENGE}"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACM_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=${ACM_DNSCHALLENGE}"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"
+      - "--providers.file.directory=/etc/traefik/dynamic_conf"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./data/certs:/certs
+      - ./data/traefik/letsencrypt:/letsencrypt
+      - ./data/traefik/dynamic_conf:/etc/traefik/dynamic_conf
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy_bridge
+  gitlab:
+    image: 'gitlab/gitlab-ce:13.10.3-ce.0'
+    restart: always
+    hostname: '${DOMAIN}'
+    depends_on:
+      - reverse-proxy
+    ports:
+      - '${GITLAB_SSH_PORT}:22'
+    labels:
+      - traefik.enable=true
+      - traefik.backend=gitlab
+      - traefik.docker.network=proxy_bridge
+
+      - traefik.http.routers.gitlab.service=gitlab_app
+      - traefik.http.routers.gitlab-http.service=gitlab_app
+      - traefik.http.middlewares.gitlab-https.redirectscheme.scheme=https
+      - traefik.http.routers.gitlab-http.entrypoints=web
+      - traefik.http.routers.gitlab-http.rule=Host(`${GITLAB_DOMAIN}`)
+      - traefik.http.routers.gitlab-http.middlewares=gitlab-https
+      - traefik.http.routers.gitlab.entrypoints=websecure
+      - traefik.http.routers.gitlab.rule=Host(`${GITLAB_DOMAIN}`)
+      - traefik.http.routers.gitlab.tls.certresolver=letsencrypt
+      - traefik.http.services.gitlab_app.loadbalancer.server.port=80
+
+      - traefik.http.routers.gitlab_registry.service=gitlab_registry
+      - traefik.http.routers.gitlab_registry-http.service=gitlab_registry
+      - traefik.http.middlewares.gitlab_registry-https.redirectscheme.scheme=https
+      - traefik.http.routers.gitlab_registry-http.entrypoints=web
+      - traefik.http.routers.gitlab_registry-http.rule=Host(`${REGISTRY_DOMAIN}`)
+      - traefik.http.routers.gitlab_registry-http.middlewares=gitlab_registry-https
+      - traefik.http.routers.gitlab_registry.entrypoints=websecure
+      - traefik.http.routers.gitlab_registry.rule=Host(`${REGISTRY_DOMAIN}`)
+      - traefik.http.routers.gitlab_registry.tls.certresolver=letsencrypt
+      - traefik.http.services.gitlab_registry.loadbalancer.server.port=5000
+    volumes:
+      - './data/gitlab/config:/etc/gitlab'
+      - './data/gitlab/logs:/var/log/gitlab'
+      - './data/gitlab/data:/var/opt/gitlab'
+    networks:
+      - proxy_bridge
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    container_name: gitlab-runner
+    restart: always
+    networks:
+      - proxy_bridge
+    links:
+      - 'reverse-proxy:${GITLAB_DOMAIN}'
+    depends_on:
+      - gitlab
+      - reverse-proxy
+    volumes:
+      - ./data/certs:/certs
+      - ./data/runner:/etc/gitlab-runner
+      - ./data/runner/cache:/cache
+      - /var/run/docker.sock:/var/run/docker.sock
+networks:
+  proxy_bridge:
+    external:
+      name: proxy_bridge
